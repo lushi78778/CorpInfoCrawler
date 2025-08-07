@@ -1,0 +1,215 @@
+import time
+import ddddocr
+import pandas as pd
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
+
+# ==============================================================================
+# --- 1. 配置 ---
+YOUR_USERNAME = "*"
+YOUR_PASSWORD = "*"
+ITEMS_TO_SCRAPE = 83
+OUTPUT_FILENAME = "scraped_data.xlsx"
+# ==============================================================================
+
+
+# --- 2. 網站和元素定位 (XPaths) ---
+login_url = "https://shad.samr.gov.cn/#/login"
+enterprise_url = "https://shad.samr.gov.cn/#/enterprise"
+username_xpath = '//*[@id="app"]/div/div[1]/div/div/div[2]/div[2]/div[2]/form/div[1]/div/div/div/div[1]/input'
+password_xpath = '//*[@id="app"]/div/div[1]/div/div/div[2]/div[2]/div[2]/form/div[2]/div/div/div/div[1]/input'
+captcha_input_xpath = '//*[@id="app"]/div/div[1]/div/div/div[2]/div[2]/div[2]/form/div[3]/div[1]/div/div/div/div/input'
+captcha_image_xpath = '//*[@id="v_container"]/img'
+login_button_xpath = '//*[@id="app"]/div/div[1]/div/div/div[2]/div[2]/div[2]/form/div[4]/button'
+community_dropdown_xpath = '//*[@id="app"]/div/section/div/div/div/div[2]/div[1]/div[1]/div[1]/div[2]/div/input'
+community_option_xpath = '//*[@id="app"]/div/section/div/div/div/div[2]/div[1]/div[1]/div[1]/div[2]/div[2]/div[2]/div[2]'
+query_button_xpath = '//*[@id="app"]/div/section/div/div/div/div[2]/div[1]/div[2]/div[1]'
+pagesize_dropdown_xpath = '//*[@id="app"]/div/section/div/div/div/div[3]/div[3]/div/span[2]/div/div/input'
+pagesize_100_option_xpath = "//div[contains(@class, 'el-select-dropdown') and not(contains(@style,'display: none'))]//li//span[text()='100条/页']"
+
+# --- 3. 輔助函式：爬取詳情頁所有資料 ---
+def scrape_all_detail_data(driver):
+    """
+    這個函式負責在詳情頁彈窗出現後，爬取所有可見的欄位資料。
+    """
+    data = {}
+    
+    def get_value(xpath):
+        """一個內部小函式，用於安全地獲取元素值，找不到就返回'未找到'"""
+        try:
+            element = driver.find_element(By.XPATH, xpath)
+            if element.tag_name == 'input':
+                return element.get_attribute('value')
+            else:
+                return element.text.strip()
+        except NoSuchElementException:
+            return "未找到"
+
+    print("   [爬取] 正在提取「基本信息」...")
+    # --- 基本信息 ---
+    data['统一社会信用代码'] = get_value("//label[text()='统一社会信用代码']/following-sibling::div//input")
+    data['登记状态'] = get_value("//label[text()='登记状态']/following-sibling::div//input")
+    data['主体名称'] = get_value("//label[text()='主体名称']/following-sibling::div//input")
+    data['主体状态'] = get_value("//label[text()='主体状态']/following-sibling::div//input")
+    data['法定代表人'] = get_value("//label[text()='法定代表人']/following-sibling::div//input")
+    data['主体类别'] = get_value("//label[text()='主体类别']/following-sibling::div//input")
+    data['主体级别'] = get_value("//label[text()='主体级别']/following-sibling::div//label[contains(@class, 'is-active')]/span")
+    data['主体电话'] = get_value("//label[text()='主体电话']/following-sibling::div//input")
+    data['主体网址'] = get_value("//label[text()='主体网址']/following-sibling::div//input")
+    data['从业人数'] = get_value("//label[text()='从业人数']/following-sibling::div//input")
+    data['营业收入'] = get_value("//label[text()='营业收入']/following-sibling::div//input")
+    data['负责人'] = get_value("//label[text()='负责人']/following-sibling::div//input")
+    data['负责人职务'] = get_value("//label[text()='职务']/following-sibling::div//input")
+    data['负责人身份证号'] = get_value("//div[.//label[text()='负责人']]//label[text()='身份证号']/following-sibling::div//input")
+    data['负责人手机号'] = get_value("//div[.//label[text()='负责人']]//label[text()='手机号']/following-sibling::div//input")
+
+    # 處理拼接的「住所」欄位
+    try:
+        address_parts = driver.find_elements(By.XPATH, "//label[text()='住所']/following-sibling::div/div[contains(@class,'jbselect')]//font")
+        address_main = " ".join([part.text for part in address_parts])
+        address_detail = driver.find_element(By.XPATH, "//label[text()='住所']/following-sibling::div/div[contains(@class,'el-input')]/input").get_attribute('value')
+        data['住所'] = f"{address_main} {address_detail}".strip()
+    except Exception:
+        data['住所'] = "未找到"
+
+    print("   [爬取] 正在提取「安全责任人」...")
+    # --- 安全责任人 ---
+    data['食品安全总监姓名'] = get_value("//label[text()='食品安全总监']/following-sibling::div//input")
+    data['食品安全总监职务'] = get_value("//div[.//label[text()='食品安全总监']]//label[text()='职务']/following-sibling::div//input")
+    data['食品安全总监身份证号'] = get_value("//div[.//label[text()='食品安全总监']]//label[text()='身份证号']/following-sibling::div//input")
+    data['食品安全总监手机号'] = get_value("//div[.//label[text()='食品安全总监']]//label[text()='手机号']/following-sibling::div//input")
+    data['食品安全员姓名'] = get_value("//label[text()='食品安全员']/following-sibling::div//input")
+    data['食品安全员职务'] = get_value("//div[.//label[text()='食品安全员']]//label[text()='职务']/following-sibling::div//input")
+    data['食品安全员身份证号'] = get_value("//div[.//label[text()='食品安全员']]//label[text()='身份证号']/following-sibling::div//input")
+    data['食品安全员手机号'] = get_value("//div[.//label[text()='食品安全员']]//label[text()='手机号']/following-sibling::div//input")
+
+    print("   [爬取] 正在提取「登记/备案/许可证信息」...")
+    # --- 登记/备案/许可证信息 ---
+    # 使用 .// 來確保我們只在許可證信息區塊內查找
+    license_section_xpath = "//div[contains(@class, 'xkzxx')]"
+    data['备案编号'] = get_value(f"{license_section_xpath}//label[text()='备案编号']/following-sibling::div//input")
+    data['许可证状态'] = get_value(f"{license_section_xpath}//label[text()='登记/备案/许可证状态']/following-sibling::div//input")
+    data['许可证-统一社会信用代码/身份证号'] = get_value(f"{license_section_xpath}//label[contains(text(), '统一社会信用代码')]/following-sibling::div//input")
+    data['许可证-法定代表人'] = get_value(f"{license_section_xpath}//label[text()='法定代表人(负责人)']/following-sibling::div//input")
+    data['食品经营者名称'] = get_value(f"{license_section_xpath}//label[text()='食品经营者名称']/following-sibling::div//input")
+    data['许可证-法定代表人联系方式'] = get_value(f"{license_section_xpath}//label[contains(text(), '联系方式')]/following-sibling::div//input")
+    data['经营场所住所'] = get_value(f"{license_section_xpath}//label[text()='经营场所住所']/following-sibling::div//input")
+
+    return data
+
+
+# --- 4. 主程序 ---
+driver = webdriver.Chrome()
+wait = WebDriverWait(driver, 20)
+driver.maximize_window()
+all_scraped_data = []
+
+try:
+    print("➡️ [流程開始] 正在執行登入和頁面設定...")
+    driver.get(login_url)
+    
+    wait.until(EC.presence_of_element_located((By.XPATH, username_xpath))).send_keys(YOUR_USERNAME)
+    driver.find_element(By.XPATH, password_xpath).send_keys(YOUR_PASSWORD)
+    time.sleep(2)
+    
+    captcha_element = wait.until(EC.visibility_of_element_located((By.XPATH, captcha_image_xpath)))
+    ocr = ddddocr.DdddOcr()
+    recognized_text = ocr.classification(captcha_element.screenshot_as_png)
+    print(f"   [INFO] OCR 識別結果: {recognized_text}")
+    driver.find_element(By.XPATH, captcha_input_xpath).send_keys(recognized_text)
+    
+    login_button = wait.until(EC.element_to_be_clickable((By.XPATH, login_button_xpath)))
+    driver.execute_script("arguments[0].click();", login_button)
+    time.sleep(5)
+    driver.get(enterprise_url)
+    time.sleep(3)
+    
+    community_dropdown = wait.until(EC.element_to_be_clickable((By.XPATH, community_dropdown_xpath)))
+    community_dropdown.click()
+    wait.until(EC.element_to_be_clickable((By.XPATH, community_option_xpath))).click()
+    time.sleep(1)
+    wait.until(EC.element_to_be_clickable((By.XPATH, query_button_xpath))).click()
+    time.sleep(1)
+
+    pagesize_dropdown_element = wait.until(EC.element_to_be_clickable((By.XPATH, pagesize_dropdown_xpath)))
+    driver.execute_script("arguments[0].scrollIntoView(true);", pagesize_dropdown_element)
+    pagesize_dropdown_element.click()
+    wait.until(EC.element_to_be_clickable((By.XPATH, pagesize_100_option_xpath))).click()
+    
+    print("✅ [流程完成] 登入和頁面設定成功。")
+    wait.until(EC.visibility_of_element_located((By.XPATH, "//div[@data-v-2fe107be and @class='itemList']")))
+
+
+    # === 步驟 10: 循環爬取主體列表 ===
+    print(f"\n➡️ [爬取開始] 準備循環爬取，目標處理 {ITEMS_TO_SCRAPE} 筆資料...")
+
+    for i in range(ITEMS_TO_SCRAPE):
+        print("-" * 60)
+        company_name = "未知"
+        try:
+            item_list = wait.until(EC.presence_of_all_elements_located((By.XPATH, "//div[@data-v-2fe107be and @class='itemList']")))
+            
+            if i >= len(item_list):
+                print(f"   [INFO] 頁面上的項目 (共 {len(item_list)} 筆) 少於目標爬取索引 {i+1}，爬取提前結束。")
+                break
+
+            current_item = item_list[i]
+            company_name_element = current_item.find_element(By.XPATH, ".//div[contains(@class, 'itemName')]")
+            company_name = company_name_element.get_attribute('title')
+            print(f"   [處理中] 正在處理第 {i+1} 個主體: {company_name}")
+            time.sleep(1) # 遵照您的要求，保留此處等待
+
+            edit_button = current_item.find_element(By.XPATH, ".//div[contains(@class, 'btnFp')]")
+            driver.execute_script("arguments[0].click();", edit_button)
+            time.sleep(2) # 遵照您的要求，保留此處等待
+            
+            # --- 呼叫函式爬取詳情頁所有資料 ---
+            scraped_data = scrape_all_detail_data(driver)
+            scraped_data['列表页-主体名称'] = company_name # 將列表頁的名稱也加入字典，方便核對
+            all_scraped_data.append(scraped_data)
+            print(f"   [成功] 資料提取完畢。")
+            
+            # --- 返回列表頁 ---
+            print("   [導航] 返回列表頁...")
+            driver.back()
+
+            # --- 等待列表頁重新載入完成 ---
+            print("   [等待] 等待列表頁重新載入...")
+            wait.until(EC.visibility_of_element_located((By.XPATH, pagesize_dropdown_xpath)))
+
+        except Exception as item_error:
+            print(f"   [錯誤] 處理第 {i+1} 個主體 ({company_name}) 時發生錯誤: {item_error}")
+            print("   [策略] 跳過此項目，嘗試繼續處理下一個...")
+            if "/enterprise" not in driver.current_url:
+                driver.get(enterprise_url)
+            continue
+    
+    print("\n✅ [爬取完成] 指定數量的資料已處理完畢！")
+
+except Exception as e:
+    print(f"\n❌ [程式錯誤] 發生未預期的錯誤: {e}")
+    screenshot_path = "error_screenshot.png"
+    driver.save_screenshot(screenshot_path)
+    print(f"錯誤發生時的頁面截圖已儲存至: {screenshot_path}")
+    input("按 Enter 鍵退出...")
+
+finally:
+    # === 步驟 11: 將結果儲存到 Excel ===
+    if all_scraped_data:
+        print(f"\n➡️ [儲存] 正在將 {len(all_scraped_data)} 筆資料儲存至 {OUTPUT_FILENAME}...")
+        try:
+            df = pd.DataFrame(all_scraped_data)
+            df.to_excel(OUTPUT_FILENAME, index=False, engine='openpyxl')
+            print(f"✅ [成功] 資料已成功儲存至 {OUTPUT_FILENAME}！")
+        except ImportError:
+            print("⚠️ [警告] 未安裝 'openpyxl'。請執行 'pip install openpyxl' 來支援 Excel 寫入。")
+        except Exception as save_error:
+            print(f"❌ [儲存失敗] 儲存 Excel 時發生錯誤: {save_error}")
+    else:
+        print("\n⚠️ [注意] 沒有成功爬取到任何資料，不建立 Excel 檔案。")
+        
+    print("\n[結束] 正在關閉瀏覽器...")
+    driver.quit()
